@@ -24,34 +24,33 @@
     </ol>
 
     <script>
-      /**
-       * A simple webpage to test a browser's PRF support.
-       */
+      let regCredential;
+      let encryptedData;  // Store encrypted data from registration
+      let encryptionNonce;  // Store nonce from registration
+      const firstSalt = new Uint8Array(new Array(32).fill(1)).buffer;
+      const message = "hello readers 🥳";
 
       document.getElementById("register").addEventListener("click", register);
       document.getElementById("authenticate").addEventListener("click", authenticate);
-
-      let regCredential;
-      const firstSalt = new Uint8Array(new Array(32).fill(1)).buffer;
 
       async function register() {
         console.log('Starting credential creation...');
         const options = {
           publicKey: {
-            challenge: new Uint8Array([1, 2, 3, 4]), // Example value
+            challenge: new Uint8Array([1, 2, 3, 4]),
             rp: {
               name: "localhost PRF demo",
               id: "localhost",
             },
             user: {
-              id: new Uint8Array([5, 6, 7, 8]), // Example value
+              id: new Uint8Array([5, 6, 7, 8]),
               name: "user@localhost",
               displayName: "user@localhost",
             },
             pubKeyCredParams: [
-              { alg: -8, type: "public-key" }, // Ed25519
-              { alg: -7, type: "public-key" }, // ES256
-              { alg: -257, type: "public-key" }, // RS256
+              { alg: -8, type: "public-key" },
+              { alg: -7, type: "public-key" },
+              { alg: -257, type: "public-key" },
             ],
             authenticatorSelection: {
               userVerification: "required",
@@ -70,30 +69,58 @@
         console.log('Full credential:', regCredential);
 
         const extensionResults = regCredential.getClientExtensionResults();
-        // Looking for something like this
-        // {
-        //   prf: {
-        //     enabled: true
-        //   }
-        // }
-      console.log('Raw extension results:', extensionResults);
-      console.log('Has prf property:', 'prf' in extensionResults);
-        const prfSupported = !!(
-          extensionResults.prf && extensionResults.prf.enabled
-        );
+        console.log('Raw extension results:', extensionResults);
+        console.log('Has prf property:', 'prf' in extensionResults);
+        
+        const prfSupported = !!(extensionResults.prf && extensionResults.prf.enabled);
         console.log(`PRF supported: ${prfSupported}`);
 
-        if(prfSupported){
+        if(prfSupported && extensionResults.prf.results) {
           console.log('Register PRF output', new Uint8Array(extensionResults.prf.results.first));
+          
+          // Generate encryption key from PRF output
+          const inputKeyMaterial = new Uint8Array(extensionResults.prf.results.first);
+          const keyDerivationKey = await crypto.subtle.importKey(
+            "raw",
+            inputKeyMaterial,
+            "HKDF",
+            false,
+            ["deriveKey"]
+          );
+
+          const label = "encryption key";
+          const info = new TextEncoder().encode(label);
+          const salt = new Uint8Array();
+
+          const encryptionKey = await crypto.subtle.deriveKey(
+            { name: "HKDF", info, salt, hash: "SHA-256" },
+            keyDerivationKey,
+            { name: "AES-GCM", length: 256 },
+            false,
+            ["encrypt", "decrypt"]
+          );
+
+          // Encrypt the message during registration
+          encryptionNonce = crypto.getRandomValues(new Uint8Array(12));
+          encryptedData = await crypto.subtle.encrypt(
+            { name: "AES-GCM", iv: encryptionNonce },
+            encryptionKey,
+            new TextEncoder().encode(message)
+          );
+
+          console.log('Message encrypted during registration');
         }
       }
 
-
-
       async function authenticate() {
+        if (!encryptedData || !encryptionNonce) {
+          console.error('No encrypted data available. Please register first.');
+          return;
+        }
+
         const auth1Credential = await navigator.credentials.get({
           publicKey: {
-            challenge: new Uint8Array([9, 0, 1, 2]), // Example value
+            challenge: new Uint8Array([9, 0, 1, 2]),
             allowCredentials: [
               {
                 id: regCredential.rawId,
@@ -102,8 +129,6 @@
               },
             ],
             rpId: "localhost",
-            // This must always be either "discouraged" or "required".
-            // Pick one and stick with it.
             userVerification: "required",
             extensions: {
               prf: {
@@ -115,60 +140,51 @@
           },
         });
 
-        const auth1ExtensionResults =
-          auth1Credential.getClientExtensionResults();
+        const auth1ExtensionResults = auth1Credential.getClientExtensionResults();
         console.log('Auth extension results:', auth1ExtensionResults);
         console.log('Auth PRF output', new Uint8Array(auth1ExtensionResults.prf.results.first));
 
-        const inputKeyMaterial = new Uint8Array(
-          auth1ExtensionResults.prf.results.first
-        );
-        const keyDerivationKey = await crypto.subtle.importKey(
-          "raw",
-          inputKeyMaterial,
-          "HKDF",
-          false,
-          ["deriveKey"]
-        );
+        // Try to decrypt using the PRF output from authentication
+        try {
+          const inputKeyMaterial = new Uint8Array(auth1ExtensionResults.prf.results.first);
+          const keyDerivationKey = await crypto.subtle.importKey(
+            "raw",
+            inputKeyMaterial,
+            "HKDF",
+            false,
+            ["deriveKey"]
+          );
 
-        // Never forget what you set this value to or the key can't be
-        // derived later
-        const label = "encryption key";
-        const info = new TextEncoder().encode(label);
-        // `salt` is a required argument for `deriveKey()`, but should
-        // be empty
-        const salt = new Uint8Array();
+          const label = "encryption key";
+          const info = new TextEncoder().encode(label);
+          const salt = new Uint8Array();
 
-        const encryptionKey = await crypto.subtle.deriveKey(
-          { name: "HKDF", info, salt, hash: "SHA-256" },
-          keyDerivationKey,
-          { name: "AES-GCM", length: 256 },
-          // No need for exportability because we can deterministically
-          // recreate this key
-          false,
-          ["encrypt", "decrypt"]
-        );
+          const encryptionKey = await crypto.subtle.deriveKey(
+            { name: "HKDF", info, salt, hash: "SHA-256" },
+            keyDerivationKey,
+            { name: "AES-GCM", length: 256 },
+            false,
+            ["encrypt", "decrypt"]
+          );
 
-        // Keep track of this `nonce`, you'll need it to decrypt later!
-        // FYI it's not a secret so you don't have to protect it.
-        const nonce = crypto.getRandomValues(new Uint8Array(12));
+          const decrypted = await crypto.subtle.decrypt(
+            { name: "AES-GCM", iv: encryptionNonce },
+            encryptionKey,
+            encryptedData
+          );
 
-        const encrypted = await crypto.subtle.encrypt(
-          { name: "AES-GCM", iv: nonce },
-          encryptionKey,
-          new TextEncoder().encode("hello readers 🥳")
-        );
-
-        const decrypted = await crypto.subtle.decrypt(
-          // `nonce` should be the same value from Step 2.3
-          { name: "AES-GCM", iv: nonce },
-          encryptionKey,
-          encrypted
-        );
-
-        const decodedMessage = new TextDecoder().decode(decrypted);
-        console.log(`Decoded message: "${decodedMessage}"`);
-        // hello readers 🥳
+          const decodedMessage = new TextDecoder().decode(decrypted);
+          console.log(`Decoded message: "${decodedMessage}"`);
+          
+          if (decodedMessage === message) {
+            console.log('✅ Successfully decrypted message with same PRF output!');
+          } else {
+            console.log('❌ Decrypted message does not match original!');
+          }
+        } catch (error) {
+          console.error('❌ Failed to decrypt message:', error);
+          console.log('This likely means the PRF outputs are different between devices!');
+        }
       }
     </script>
   </body>
