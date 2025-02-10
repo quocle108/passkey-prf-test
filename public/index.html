@@ -82,7 +82,13 @@
           extensionResults.prf && extensionResults.prf.enabled
         );
         console.log(`PRF supported: ${prfSupported}`);
+
+        if(prfSupported){
+          console.log('Register PRF output', new Uint8Array(extensionResults.prf.results.first));
+        }
       }
+
+
 
       async function authenticate() {
         const auth1Credential = await navigator.credentials.get({
@@ -112,6 +118,7 @@
         const auth1ExtensionResults =
           auth1Credential.getClientExtensionResults();
         console.log('Auth extension results:', auth1ExtensionResults);
+        console.log('Auth PRF output', new Uint8Array(auth1ExtensionResults.prf.results.first));
 
         const inputKeyMaterial = new Uint8Array(
           auth1ExtensionResults.prf.results.first
